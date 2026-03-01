@@ -1,129 +1,208 @@
 # smtp-mailersend-relay
 
-SMTP relay in Go that accepts SMTP submissions (e.g. from listmonk), stores each recipient message durably in SQLite, and dispatches using MailerSend Bulk Email API (`/v1/bulk-email`).
+SMTP relay in Go that accepts SMTP submissions (for example from listmonk), stores each recipient message durably in SQLite, and dispatches via MailerSend Bulk Email API (`/v1/bulk-email`).
 
-## What it solves
-
-MailerSend SMTP relay has strict per-connection and per-IP transaction limits. This relay keeps SMTP compatibility for tools that only speak SMTP while sending outbound mail through MailerSend bulk API.
+This project exists to keep SMTP-compatible tools working while bypassing low SMTP relay throughput limits by using MailerSend bulk API under the hood.
 
 ## Features
 
 - SMTP ingress (`EHLO/HELO`, `STARTTLS`, `AUTH PLAIN`, `MAIL`, `RCPT`, `DATA`, `RSET`, `NOOP`, `QUIT`)
-- `250 OK` only after durable SQLite enqueue
+- `250 OK` only after durable queue write
 - One queued message per recipient
-- RFC 5322 / MIME parsing with text+html+attachments
-- Async dispatch via official `mailersend-go` SDK
-- Retry with exponential backoff + jitter
-- Dead-letter queue and replay/export commands
-- `/healthz`, `/readyz`, `/metrics` (Prometheus)
-- Structured JSON logging
+- RFC 5322 + MIME parsing with transfer-encoding decoding (`quoted-printable`, `base64`)
+- Attachments supported
+- Async batching to MailerSend (`/bulk-email`)
+- Retry with backoff + jitter, DLQ support
+- Health and metrics endpoints (`/healthz`, `/readyz`, `/metrics`)
+- Structured logs for ingress, dispatch, retry, DLQ transitions
+
+## Architecture (Short)
+
+1. SMTP client submits message.
+2. Relay validates/authenticates and enqueues one job per recipient in SQLite.
+3. Dispatcher claims queued/retry jobs in batches.
+4. Relay sends batch to MailerSend bulk API.
+5. Jobs move to `sent`, `retry`, or `dlq`.
+
+Delivery semantics are at-least-once. Duplicate sends are possible on ambiguous failures.
 
 ## Commands
 
 - `relay serve`
 - `relay migrate`
 - `relay dlq export --format=jsonl --out=./dlq-export.jsonl`
-- `relay dlq replay --ids=id1,id2` or `relay dlq replay --from-file=./dlq-export.jsonl`
+- `relay dlq replay --ids=id1,id2`
+- `relay dlq replay --from-file=./dlq-export.jsonl`
 
-## Environment Variables
+## Quick Start (Local)
 
-### Core
-
-- `APP_ENV` (default: `production`)
-- `LOG_LEVEL` (default: `info`)
-
-### SMTP
-
-- `SMTP_LISTEN_ADDR` (default: `:2525`)
-- `SMTP_DOMAIN` (default: `localhost`)
-- `SMTP_AUTH_USERNAME` (required for `serve`)
-- `SMTP_AUTH_PASSWORD` (required for `serve`)
-- `SMTP_REQUIRE_STARTTLS` (default: `true`)
-- `SMTP_ALLOW_INSECURE_AUTH` (default: `false`)
-- `SMTP_TLS_CERT_FILE` (required when `SMTP_REQUIRE_STARTTLS=true`)
-- `SMTP_TLS_KEY_FILE` (required when `SMTP_REQUIRE_STARTTLS=true`)
-- `SMTP_ALLOWED_SENDER_DOMAINS` (required, CSV; must be verified in MailerSend)
-- `SMTP_MAX_MESSAGE_BYTES` (default: `8388608`)
-- `SMTP_MAX_RECIPIENTS` (default: `1000`)
-- `SMTP_MAX_CONNECTIONS` (default: `200`)
-- `SMTP_MAX_CONNECTIONS_PER_IP` (default: `20`)
-- `SMTP_RATE_LIMIT_PER_IP_PER_MIN` (default: `600`)
-
-### HTTP ops
-
-- `HTTP_LISTEN_ADDR` (default: `:8080`)
-
-### SQLite
-
-- `SQLITE_PATH` (default: `./data/relay.db`)
-- `SQLITE_MAX_OPEN_CONNS` (default: `1`)
-- `SQLITE_MAX_IDLE_CONNS` (default: `1`)
-
-### Dispatch
-
-- `DISPATCHER_WORKERS` (default: `4`)
-- `QUEUE_CLAIM_LIMIT` (default: `1000`)
-- `QUEUE_LEASE_TIMEOUT` (default: `30s`)
-- `BATCH_MAX_COUNT` (default: `500`)
-- `BATCH_MAX_BYTES` (default: `5242880`)
-- `BATCH_FLUSH_INTERVAL` (default: `250ms`)
-- `RETRY_MAX_ATTEMPTS` (default: `8`)
-- `REQUEUE_STALE_INTERVAL` (default: `30s`)
-
-### MailerSend
-
-- `MAILERSEND_API_KEY` (required for `serve`)
-- `MAILERSEND_BASE_URL` (default: `https://api.mailersend.com/v1`)
-- `MAILERSEND_TIMEOUT` (default: `20s`)
-- `MAILERSEND_ENABLE_CUSTOM_HEADERS` (default: `false`; requires supported MailerSend plan)
-
-## Quick Start
-
-1. Create TLS cert/key for SMTP STARTTLS.
-2. Set required env vars.
-3. Run migration:
+1. Copy env template and fill values:
 
 ```bash
-relay migrate
+cp .env.example .env
 ```
 
-4. Run service:
+2. Create SMTP certs (self-signed for testing):
 
 ```bash
-relay serve
+mkdir -p certs
+openssl req -x509 -newkey rsa:2048 -sha256 -nodes -days 365 \
+  -keyout certs/server.key \
+  -out certs/server.crt \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost"
 ```
 
-5. Configure listmonk SMTP to relay host/port and AUTH credentials.
+3. Migrate and run:
 
-## listmonk Example
+```bash
+go run ./cmd/relay migrate
+go run ./cmd/relay serve
+```
 
-```ini
-host = "relay"
+4. Verify:
+
+```bash
+curl -s http://localhost:8080/healthz
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8080/readyz
+```
+
+## Production Setup (Dokploy+Listmonk example)
+
+### 1) Volumes
+
+- Mount persistent Docker volume to `/data`
+- Set `SQLITE_PATH=/data/relay.db`
+
+Container runs as non-root (`uid 65532`), so volume must be writable by this user.
+If needed:
+
+```bash
+docker run --rm -u 0 -v <VOLUME_NAME>:/data alpine \
+  sh -c "mkdir -p /data && chown -R 65532:65532 /data && chmod 775 /data"
+```
+
+### 2) Certificates
+
+If exposing SMTP publicly with STARTTLS:
+
+- Mount cert file to `/certs/server.crt`
+- Mount key file to `/certs/server.key`
+- Set:
+  - `SMTP_REQUIRE_STARTTLS=true`
+  - `SMTP_ALLOW_INSECURE_AUTH=false`
+  - `SMTP_TLS_CERT_FILE=/certs/server.crt`
+  - `SMTP_TLS_KEY_FILE=/certs/server.key`
+  - `SMTP_DOMAIN=<smtp-hostname>`
+
+If cert is self-signed, clients must use `tls_skip_verify=true`.
+
+### 3) Ports and DNS
+
+- Expose TCP `2525 -> 2525`
+- Open `2525/tcp` on VPS firewall/security group
+- DNS record for SMTP host must be DNS-only (no HTTP proxy in front of SMTP)
+
+### 4) listmonk SMTP settings
+
+Use:
+
+```toml
+host = "relay.yourdomain.com"
 port = 2525
+auth_protocol = "plain"
 auth_username = "relay-user"
 auth_password = "relay-pass"
 tls_enabled = true
-tls_skip_verify = false
-from_email = "news@example.com"
+tls_skip_verify = false # true only for self-signed certs
+from_email = "newsletter@yourdomain.com"
 ```
 
-`from_email` domain must be in `SMTP_ALLOWED_SENDER_DOMAINS`.
+`from_email` domain must be in `SMTP_ALLOWED_SENDER_DOMAINS` and verified in MailerSend.
 
-## Operational Runbook
+## Required Environment Variables
 
-### Health checks
+### Required for `serve`
 
-- `GET /healthz`: process liveness
-- `GET /readyz`: DB ping + dispatcher heartbeat
-- `GET /metrics`: Prometheus metrics
+- `SMTP_AUTH_USERNAME`
+- `SMTP_AUTH_PASSWORD`
+- `SMTP_ALLOWED_SENDER_DOMAINS`
+- `MAILERSEND_API_KEY`
+- `SMTP_TLS_CERT_FILE` and `SMTP_TLS_KEY_FILE` when `SMTP_REQUIRE_STARTTLS=true`
 
-### Common failure patterns
+### Key defaults
 
-- `550 Sender domain not allowed`: sender domain missing from `SMTP_ALLOWED_SENDER_DOMAINS`
-- `530 Must issue STARTTLS first`: SMTP client not using STARTTLS
-- Queue growth and retries increasing: check MailerSend API key/quota/rate limits
+- `SMTP_LISTEN_ADDR=:2525`
+- `HTTP_LISTEN_ADDR=:8080`
+- `SQLITE_PATH=./data/relay.db`
+- `BATCH_MAX_COUNT=500`
+- `BATCH_MAX_BYTES=5242880`
+- `BATCH_FLUSH_INTERVAL=250ms`
+- `RETRY_MAX_ATTEMPTS=8`
+- `MAILERSEND_ENABLE_CUSTOM_HEADERS=false`
 
-### DLQ handling
+See `.env.example` for full list.
+
+## Operations
+
+### Health and metrics
+
+- `GET /healthz`
+- `GET /readyz`
+- `GET /metrics`
+
+### Queue status
+
+```bash
+sqlite3 /data/relay.db "select status,count(*) from jobs group by status;"
+```
+
+### Check MailerSend bulk status
+
+```bash
+curl -s -H "Authorization: Bearer $MAILERSEND_API_KEY" \
+  "https://api.mailersend.com/v1/bulk-email/<bulk_email_id>"
+```
+
+## Troubleshooting
+
+### `db migration failed: unable to open database file`
+
+- Volume/path/permission issue.
+- Use absolute DB path (`/data/relay.db`) and ensure volume writable by `uid 65532`.
+
+### `Unsupported authentication mechanism`
+
+- Client is not using AUTH PLAIN.
+- Set listmonk `auth_protocol="plain"`.
+
+### `unencrypted connection`
+
+- Client refuses AUTH over plaintext.
+- Enable STARTTLS on relay and `tls_enabled=true` on client.
+
+### `certificate is not valid for any names`
+
+- Cert SAN does not include SMTP hostname.
+- Reissue cert with `DNS:<your-smtp-host>`.
+
+### `certificate signed by unknown authority`
+
+- Client does not trust self-signed cert.
+- Use CA-signed cert, or temporarily `tls_skip_verify=true`.
+
+### API accepts (`202`) but no delivery
+
+- Query bulk status for `validation_errors_count` or suppressions.
+- If you see `MS42233` (custom headers feature), keep:
+  - `MAILERSEND_ENABLE_CUSTOM_HEADERS=false`
+
+### HTML looks broken (`=3D`, image URL issues)
+
+- Relay now decodes quoted-printable/base64 transfer encodings before forwarding.
+- Deploy latest version if you still see this.
+
+## DLQ
 
 Export:
 
@@ -131,20 +210,14 @@ Export:
 relay dlq export --format=jsonl --out=./dlq-export.jsonl
 ```
 
-Replay selected IDs:
+Replay by IDs:
 
 ```bash
 relay dlq replay --ids=01H...,01J...
 ```
 
-Replay from export file:
+Replay from file:
 
 ```bash
 relay dlq replay --from-file=./dlq-export.jsonl
 ```
-
-## Development Notes
-
-- Delivery semantics are at-least-once.
-- Duplicate sends are possible on ambiguous network/API failures.
-- This project is single-instance optimized (SQLite queue).
