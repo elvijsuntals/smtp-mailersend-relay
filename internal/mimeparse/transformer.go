@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"mime/quotedprintable"
 	"net/mail"
 	"net/textproto"
 	"strings"
@@ -96,6 +97,11 @@ type parsedContent struct {
 
 func parseContent(header textproto.MIMEHeader, body []byte) (*parsedContent, error) {
 	out := &parsedContent{}
+	decodedBody, err := decodeTransferEncoding(header, body)
+	if err != nil {
+		return nil, fmt.Errorf("decode transfer-encoding: %w", err)
+	}
+	body = decodedBody
 
 	contentType := header.Get("Content-Type")
 	if strings.TrimSpace(contentType) == "" {
@@ -312,5 +318,43 @@ func copyStrings(in []string) []string {
 	}
 	out := make([]string, len(in))
 	copy(out, in)
+	return out
+}
+
+func decodeTransferEncoding(header textproto.MIMEHeader, body []byte) ([]byte, error) {
+	enc := strings.ToLower(strings.TrimSpace(header.Get("Content-Transfer-Encoding")))
+	switch enc {
+	case "", "7bit", "8bit", "binary":
+		return body, nil
+	case "quoted-printable":
+		r := quotedprintable.NewReader(bytes.NewReader(body))
+		return io.ReadAll(r)
+	case "base64":
+		decoded, err := io.ReadAll(base64.NewDecoder(base64.StdEncoding, bytes.NewReader(body)))
+		if err == nil {
+			return decoded, nil
+		}
+		compact := compactBase64(body)
+		decoded, rawErr := io.ReadAll(base64.NewDecoder(base64.RawStdEncoding, bytes.NewReader(compact)))
+		if rawErr == nil {
+			return decoded, nil
+		}
+		return nil, fmt.Errorf("base64 decode failed: %w", err)
+	default:
+		// Unknown transfer-encoding. Pass through unchanged to avoid hard failures.
+		return body, nil
+	}
+}
+
+func compactBase64(b []byte) []byte {
+	out := make([]byte, 0, len(b))
+	for _, c := range b {
+		switch c {
+		case '\r', '\n', '\t', ' ':
+			continue
+		default:
+			out = append(out, c)
+		}
+	}
 	return out
 }

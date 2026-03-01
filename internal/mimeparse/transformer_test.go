@@ -63,3 +63,38 @@ func TestTransformer_BasicMultipart(t *testing.T) {
 		t.Fatalf("attachment content mismatch: %q", string(attBody))
 	}
 }
+
+func TestTransformer_DecodesQuotedPrintableHTML(t *testing.T) {
+	t.Parallel()
+	raw := strings.Join([]string{
+		"From: Sender <sender@example.com>",
+		"To: rcpt@example.net",
+		"Subject: QP test",
+		"MIME-Version: 1.0",
+		"Content-Type: text/html; charset=UTF-8",
+		"Content-Transfer-Encoding: quoted-printable",
+		"",
+		"<body style=3D\"background:#fff\"><img src=3D\"https://example.com/logo.png?a=3Db\"></body>",
+		"",
+	}, "\r\n")
+
+	tr := NewTransformer(false)
+	msgs, err := tr.Transform("sender@example.com", []string{"rcpt@example.net"}, []byte(raw))
+	if err != nil {
+		t.Fatalf("transform failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("expected one message, got %d", len(msgs))
+	}
+
+	html := msgs[0].HTML
+	if strings.Contains(html, "=3D") {
+		t.Fatalf("quoted-printable artifacts still present in html: %q", html)
+	}
+	if !strings.Contains(html, `style="background:#fff"`) {
+		t.Fatalf("missing decoded html style attribute: %q", html)
+	}
+	if !strings.Contains(html, "a=b") {
+		t.Fatalf("missing decoded query parameter: %q", html)
+	}
+}
