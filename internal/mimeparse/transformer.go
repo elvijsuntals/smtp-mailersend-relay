@@ -15,10 +15,11 @@ import (
 )
 
 type Transformer struct {
+	includeCustomHeaders bool
 }
 
-func NewTransformer() *Transformer {
-	return &Transformer{}
+func NewTransformer(includeCustomHeaders bool) *Transformer {
+	return &Transformer{includeCustomHeaders: includeCustomHeaders}
 }
 
 func (t *Transformer) Transform(envelopeFrom string, recipients []string, raw []byte) ([]*mailersend.Message, error) {
@@ -63,8 +64,10 @@ func (t *Transformer) Transform(envelopeFrom string, recipients []string, raw []
 			Subject:    subject,
 			Text:       content.Text,
 			HTML:       content.HTML,
-			Headers:    copyHeaders(headers),
 			References: copyStrings(references),
+		}
+		if t.includeCustomHeaders && len(headers) > 0 {
+			msg.Headers = copyHeaders(headers)
 		}
 		if replyTo != nil {
 			msg.ReplyTo = mailersend.ReplyTo{Name: replyTo.Name, Email: replyTo.Email}

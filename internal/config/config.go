@@ -45,6 +45,7 @@ type Config struct {
 	MailersendAPIKey  string
 	MailersendBaseURL string
 	MailersendTimeout time.Duration
+	MailersendEnableCustomHeaders bool
 }
 
 func LoadFromEnv() (Config, error) {
@@ -85,6 +86,7 @@ func LoadFromEnv() (Config, error) {
 		MailersendAPIKey:  getenv("MAILERSEND_API_KEY", ""),
 		MailersendBaseURL: getenv("MAILERSEND_BASE_URL", "https://api.mailersend.com/v1"),
 		MailersendTimeout: getenvDuration("MAILERSEND_TIMEOUT", 20*time.Second),
+		MailersendEnableCustomHeaders: getenvBool("MAILERSEND_ENABLE_CUSTOM_HEADERS", false),
 	}
 
 	if err := cfg.ValidateCommon(); err != nil {
@@ -227,4 +229,3 @@ func splitCSV(v string) []string {
 	}
 	return out
 }
-

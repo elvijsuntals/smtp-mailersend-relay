@@ -32,7 +32,7 @@ func TestTransformer_BasicMultipart(t *testing.T) {
 		"",
 	}, "\r\n")
 
-	tr := NewTransformer()
+	tr := NewTransformer(false)
 	msgs, err := tr.Transform("sender@example.com", []string{"rcpt1@example.net", "rcpt2@example.net"}, []byte(raw))
 	if err != nil {
 		t.Fatalf("transform failed: %v", err)
@@ -63,4 +63,3 @@ func TestTransformer_BasicMultipart(t *testing.T) {
 		t.Fatalf("attachment content mismatch: %q", string(attBody))
 	}
 }
-

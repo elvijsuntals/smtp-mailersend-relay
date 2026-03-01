@@ -82,7 +82,10 @@ func runServe(args []string) error {
 	}
 
 	m := metrics.New()
-	transformer := mimeparse.NewTransformer()
+	transformer := mimeparse.NewTransformer(cfg.MailersendEnableCustomHeaders)
+	if cfg.MailersendEnableCustomHeaders {
+		logger.Warn("mailersend custom headers enabled; requires supported MailerSend plan")
+	}
 
 	sender, err := dispatch.NewMailerSendSender(cfg.MailersendAPIKey, cfg.MailersendBaseURL, cfg.MailersendTimeout)
 	if err != nil {
@@ -285,4 +288,3 @@ func hostnameOr(def string) string {
 	}
 	return h
 }
-

@@ -75,6 +75,7 @@ MailerSend SMTP relay has strict per-connection and per-IP transaction limits. T
 - `MAILERSEND_API_KEY` (required for `serve`)
 - `MAILERSEND_BASE_URL` (default: `https://api.mailersend.com/v1`)
 - `MAILERSEND_TIMEOUT` (default: `20s`)
+- `MAILERSEND_ENABLE_CUSTOM_HEADERS` (default: `false`; requires supported MailerSend plan)
 
 ## Quick Start
 
@@ -147,4 +148,3 @@ relay dlq replay --from-file=./dlq-export.jsonl
 - Delivery semantics are at-least-once.
 - Duplicate sends are possible on ambiguous network/API failures.
 - This project is single-instance optimized (SQLite queue).
-
