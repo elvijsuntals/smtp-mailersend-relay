@@ -1,8 +1,11 @@
 package dispatch
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -43,12 +46,12 @@ func (e *SenderError) Unwrap() error {
 }
 
 type MailerSendSender struct {
-	client *mailersend.Mailersend
+	httpClient *http.Client
+	apiKey     string
+	baseURL    string
 }
 
 func NewMailerSendSender(apiKey, baseURL string, timeout time.Duration) (*MailerSendSender, error) {
-	ms := mailersend.NewMailersend(apiKey)
-
 	parsed, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil {
 		return nil, fmt.Errorf("parse MAILERSEND_BASE_URL: %w", err)
@@ -61,32 +64,75 @@ func NewMailerSendSender(apiKey, baseURL string, timeout time.Duration) (*Mailer
 			next:    transport,
 		},
 	}
-	ms.SetClient(httpClient)
 
-	return &MailerSendSender{client: ms}, nil
+	return &MailerSendSender{
+		httpClient: httpClient,
+		apiKey:     strings.TrimSpace(apiKey),
+		baseURL:    strings.TrimRight(parsed.String(), "/"),
+	}, nil
 }
 
 func (s *MailerSendSender) Send(ctx context.Context, messages []*mailersend.Message) (SendResult, error) {
-	resp, apiResp, err := s.client.BulkEmail.Send(ctx, messages)
+	payload, err := json.Marshal(messages)
 	if err != nil {
-		status := 0
-		if apiResp != nil && apiResp.Response != nil {
-			status = apiResp.StatusCode
-		}
-		return SendResult{HTTPStatus: status}, &SenderError{
-			StatusCode: status,
-			Err:        err,
+		return SendResult{}, &SenderError{
+			StatusCode: 0,
+			Err:        fmt.Errorf("marshal bulk payload: %w", err),
 		}
 	}
 
-	status := 0
-	if apiResp != nil && apiResp.Response != nil {
-		status = apiResp.StatusCode
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.baseURL+"/bulk-email", bytes.NewReader(payload))
+	if err != nil {
+		return SendResult{}, &SenderError{
+			StatusCode: 0,
+			Err:        fmt.Errorf("create bulk request: %w", err),
+		}
 	}
-	return SendResult{
-		BulkEmailID: resp.BulkEmailID,
-		HTTPStatus:  status,
-	}, nil
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+s.apiKey)
+
+	resp, err := s.httpClient.Do(req)
+	if err != nil {
+		return SendResult{HTTPStatus: 0}, &SenderError{
+			StatusCode: 0,
+			Err:        err,
+		}
+	}
+	defer resp.Body.Close()
+
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if readErr != nil {
+		return SendResult{HTTPStatus: resp.StatusCode}, &SenderError{
+			StatusCode: resp.StatusCode,
+			Err:        fmt.Errorf("read bulk response: %w", readErr),
+		}
+	}
+
+	result := SendResult{HTTPStatus: resp.StatusCode}
+	if resp.StatusCode >= 200 && resp.StatusCode <= 299 {
+		var okBody struct {
+			BulkEmailID string `json:"bulk_email_id"`
+		}
+		// MailerSend should return JSON on success; if not, treat 2xx as accepted.
+		if len(body) > 0 {
+			_ = json.Unmarshal(body, &okBody)
+		}
+		result.BulkEmailID = okBody.BulkEmailID
+		return result, nil
+	}
+
+	msg := strings.TrimSpace(string(body))
+	if msg == "" {
+		msg = resp.Status
+	}
+	if len(msg) > 400 {
+		msg = msg[:400]
+	}
+	return result, &SenderError{
+		StatusCode: resp.StatusCode,
+		Err:        fmt.Errorf("mailersend bulk api error: %s", msg),
+	}
 }
 
 type baseURLRewriteTransport struct {
@@ -103,4 +149,3 @@ func (t *baseURLRewriteTransport) RoundTrip(req *http.Request) (*http.Response, 
 	}
 	return t.next.RoundTrip(clone)
 }
-
