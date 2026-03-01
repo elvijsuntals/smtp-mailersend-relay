@@ -1,0 +1,54 @@
+version: "3.9"
+
+services:
+  relay:
+    build: .
+    container_name: smtp-mailersend-relay
+    environment:
+      APP_ENV: production
+      LOG_LEVEL: info
+      SMTP_LISTEN_ADDR: ":2525"
+      SMTP_DOMAIN: relay.local
+      SMTP_AUTH_USERNAME: relay-user
+      SMTP_AUTH_PASSWORD: relay-pass
+      SMTP_REQUIRE_STARTTLS: "true"
+      SMTP_ALLOW_INSECURE_AUTH: "false"
+      SMTP_TLS_CERT_FILE: /certs/server.crt
+      SMTP_TLS_KEY_FILE: /certs/server.key
+      SMTP_ALLOWED_SENDER_DOMAINS: example.com
+      HTTP_LISTEN_ADDR: ":8080"
+      SQLITE_PATH: /data/relay.db
+      MAILERSEND_API_KEY: ${MAILERSEND_API_KEY}
+      MAILERSEND_BASE_URL: https://api.mailersend.com/v1
+    volumes:
+      - relay-data:/data
+      - ./certs:/certs:ro
+    ports:
+      - "2525:2525"
+      - "8080:8080"
+
+  # Optional local listmonk example.
+  listmonk:
+    image: listmonk/listmonk:latest
+    depends_on:
+      - db
+      - relay
+    command: [sh, -c, "./listmonk --install --idempotent --yes --config /listmonk/config.toml && ./listmonk --config /listmonk/config.toml"]
+    volumes:
+      - ./examples/listmonk-config.toml:/listmonk/config.toml:ro
+    ports:
+      - "9000:9000"
+
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: listmonk
+      POSTGRES_PASSWORD: listmonk
+      POSTGRES_DB: listmonk
+    volumes:
+      - listmonk-db:/var/lib/postgresql/data
+
+volumes:
+  relay-data:
+  listmonk-db:
+

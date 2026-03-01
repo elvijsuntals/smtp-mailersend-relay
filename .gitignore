@@ -1,0 +1,12 @@
+bin/
+dist/
+data/
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+.env
+dlq-export.jsonl
+
+
+*.exe

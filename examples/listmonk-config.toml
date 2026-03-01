@@ -1,0 +1,27 @@
+[app]
+address = "0.0.0.0:9000"
+admin_username = "admin"
+admin_password = "admin"
+
+[db]
+host = "db"
+port = 5432
+user = "listmonk"
+password = "listmonk"
+database = "listmonk"
+ssl_mode = "disable"
+max_open = 25
+max_idle = 25
+max_lifetime = "300s"
+
+[smtp]
+enabled = true
+host = "relay"
+port = 2525
+auth_username = "relay-user"
+auth_password = "relay-pass"
+tls_enabled = true
+tls_skip_verify = true
+from_email = "news@example.com"
+from_name = "Listmonk"
+
