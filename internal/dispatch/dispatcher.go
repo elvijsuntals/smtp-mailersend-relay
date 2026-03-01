@@ -162,6 +162,10 @@ func (d *Dispatcher) processBatch(ctx context.Context, jobs []queue.Job) error {
 	if len(jobs) == 0 {
 		return nil
 	}
+	d.logger.Info("dispatch batch picked",
+		zap.Int("jobs", len(jobs)),
+		zap.String("first_job_id", jobs[0].ID),
+	)
 	messages := make([]*mailersend.Message, 0, len(jobs))
 	for _, j := range jobs {
 		messages = append(messages, j.Message)
@@ -187,11 +191,26 @@ func (d *Dispatcher) processBatch(ctx context.Context, jobs []queue.Job) error {
 	if err == nil {
 		d.metrics.DispatchAPICalls.WithLabelValues("success", statusLabel).Inc()
 		d.metrics.DispatchLastSuccessUnix.Store(time.Now().UTC().Unix())
+		d.logger.Info("dispatch batch sent",
+			zap.Int("jobs", len(jobs)),
+			zap.String("first_job_id", jobs[0].ID),
+			zap.Int("http_status", statusCode),
+			zap.String("bulk_email_id", result.BulkEmailID),
+			zap.Duration("latency", lat),
+		)
 		return d.store.MarkSent(ctx, jobs, result.BulkEmailID)
 	}
 
 	class := classifyFailure(statusCode, err)
 	d.metrics.DispatchAPICalls.WithLabelValues(class, statusLabel).Inc()
+	d.logger.Warn("dispatch batch failed",
+		zap.Int("jobs", len(jobs)),
+		zap.String("first_job_id", jobs[0].ID),
+		zap.Int("http_status", statusCode),
+		zap.String("classification", class),
+		zap.Duration("latency", lat),
+		zap.String("error", safeErr(err)),
+	)
 
 	switch class {
 	case "retry":
@@ -210,12 +229,20 @@ func (d *Dispatcher) processBatch(ctx context.Context, jobs []queue.Job) error {
 				return fmt.Errorf("mark retry: %w", markErr)
 			}
 			d.metrics.DispatchRetries.Add(float64(len(retryJobs)))
+			d.logger.Info("dispatch jobs moved to retry",
+				zap.Int("jobs", len(retryJobs)),
+				zap.Time("next_attempt_at", next),
+			)
 		}
 		if len(dlqJobs) > 0 {
 			if markErr := d.store.MarkDLQ(ctx, dlqJobs, safeErr(err), statusCode); markErr != nil {
 				return fmt.Errorf("mark dlq: %w", markErr)
 			}
 			d.metrics.DispatchDLQ.Add(float64(len(dlqJobs)))
+			d.logger.Warn("dispatch jobs moved to dlq after max retries",
+				zap.Int("jobs", len(dlqJobs)),
+				zap.Int("http_status", statusCode),
+			)
 		}
 		return nil
 	case "dlq":
@@ -223,6 +250,10 @@ func (d *Dispatcher) processBatch(ctx context.Context, jobs []queue.Job) error {
 			return fmt.Errorf("mark dlq: %w", markErr)
 		}
 		d.metrics.DispatchDLQ.Add(float64(len(jobs)))
+		d.logger.Warn("dispatch jobs moved to dlq",
+			zap.Int("jobs", len(jobs)),
+			zap.Int("http_status", statusCode),
+		)
 		return nil
 	default:
 		return d.store.MarkDLQ(ctx, jobs, safeErr(err), statusCode)
@@ -325,4 +356,3 @@ func jitteredBackoff(attemptNumber int) time.Duration {
 	jitter := 0.8 + rand.Float64()*0.4
 	return time.Duration(float64(base) * jitter)
 }
-

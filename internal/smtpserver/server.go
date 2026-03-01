@@ -120,6 +120,7 @@ func (b *Backend) NewSession(c *smtp.Conn) (smtp.Session, error) {
 	ip := remoteIP(c.Conn().RemoteAddr())
 
 	if !b.acquire(ip) {
+		b.logger.Warn("smtp connection rejected: capacity/rate limit", zap.String("remote_ip", ip))
 		return nil, &smtp.SMTPError{
 			Code:         421,
 			EnhancedCode: smtp.EnhancedCode{4, 7, 0},
@@ -195,15 +196,27 @@ func (s *Session) AuthMechanisms() []string {
 
 func (s *Session) Auth(mech string) (sasl.Server, error) {
 	if strings.ToUpper(strings.TrimSpace(mech)) != sasl.Plain {
+		s.backend.logger.Warn("smtp auth rejected: unsupported mechanism",
+			zap.String("remote_ip", s.ip),
+			zap.String("mechanism", mech),
+		)
 		return nil, smtp.ErrAuthUnknownMechanism
 	}
 	return sasl.NewPlainServer(func(identity, username, password string) error {
 		if username != s.backend.cfg.SMTPAuthUsername || password != s.backend.cfg.SMTPAuthPassword {
 			s.backend.metrics.SMTPAuthFailures.Inc()
 			s.backend.metrics.SMTPRejectedMessages.WithLabelValues("auth_failed").Inc()
+			s.backend.logger.Warn("smtp auth failed",
+				zap.String("remote_ip", s.ip),
+				zap.String("username", username),
+			)
 			return smtp.ErrAuthFailed
 		}
 		s.authed = true
+		s.backend.logger.Info("smtp auth succeeded",
+			zap.String("remote_ip", s.ip),
+			zap.String("username", username),
+		)
 		return nil
 	}), nil
 }
@@ -212,6 +225,9 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	if s.backend.cfg.SMTPRequireSTARTTLS {
 		if _, ok := s.conn.TLSConnectionState(); !ok {
 			s.backend.metrics.SMTPRejectedMessages.WithLabelValues("starttls_required").Inc()
+			s.backend.logger.Warn("smtp mail rejected: starttls required",
+				zap.String("remote_ip", s.ip),
+			)
 			return &smtp.SMTPError{
 				Code:         530,
 				EnhancedCode: smtp.EnhancedCode{5, 7, 0},
@@ -221,6 +237,9 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	}
 	if !s.authed {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("auth_required").Inc()
+		s.backend.logger.Warn("smtp mail rejected: auth required",
+			zap.String("remote_ip", s.ip),
+		)
 		return &smtp.SMTPError{
 			Code:         530,
 			EnhancedCode: smtp.EnhancedCode{5, 7, 0},
@@ -231,6 +250,10 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	addr, err := mail.ParseAddress(from)
 	if err != nil {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("invalid_sender").Inc()
+		s.backend.logger.Warn("smtp mail rejected: invalid sender",
+			zap.String("remote_ip", s.ip),
+			zap.String("mail_from", from),
+		)
 		return &smtp.SMTPError{
 			Code:         550,
 			EnhancedCode: smtp.EnhancedCode{5, 1, 7},
@@ -240,6 +263,10 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 	domain := senderDomain(addr.Address)
 	if _, ok := s.backend.allowedDomains[domain]; !ok {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("sender_domain_not_allowed").Inc()
+		s.backend.logger.Warn("smtp mail rejected: sender domain not allowed",
+			zap.String("remote_ip", s.ip),
+			zap.String("sender_domain", domain),
+		)
 		return &smtp.SMTPError{
 			Code:         550,
 			EnhancedCode: smtp.EnhancedCode{5, 7, 1},
@@ -255,9 +282,15 @@ func (s *Session) Mail(from string, _ *smtp.MailOptions) error {
 func (s *Session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	if !s.authed {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("auth_required").Inc()
+		s.backend.logger.Warn("smtp rcpt rejected: auth required",
+			zap.String("remote_ip", s.ip),
+		)
 		return smtp.ErrAuthRequired
 	}
 	if s.envelopeFrom == "" {
+		s.backend.logger.Warn("smtp rcpt rejected: missing mail from",
+			zap.String("remote_ip", s.ip),
+		)
 		return &smtp.SMTPError{
 			Code:         503,
 			EnhancedCode: smtp.EnhancedCode{5, 5, 1},
@@ -267,6 +300,10 @@ func (s *Session) Rcpt(to string, _ *smtp.RcptOptions) error {
 	addr, err := mail.ParseAddress(to)
 	if err != nil {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("invalid_recipient").Inc()
+		s.backend.logger.Warn("smtp rcpt rejected: invalid recipient",
+			zap.String("remote_ip", s.ip),
+			zap.String("rcpt_to", to),
+		)
 		return &smtp.SMTPError{
 			Code:         550,
 			EnhancedCode: smtp.EnhancedCode{5, 1, 3},
@@ -280,9 +317,15 @@ func (s *Session) Rcpt(to string, _ *smtp.RcptOptions) error {
 func (s *Session) Data(r io.Reader) error {
 	if !s.authed {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("auth_required").Inc()
+		s.backend.logger.Warn("smtp data rejected: auth required",
+			zap.String("remote_ip", s.ip),
+		)
 		return smtp.ErrAuthRequired
 	}
 	if s.envelopeFrom == "" || len(s.recipients) == 0 {
+		s.backend.logger.Warn("smtp data rejected: missing envelope or recipients",
+			zap.String("remote_ip", s.ip),
+		)
 		return &smtp.SMTPError{
 			Code:         503,
 			EnhancedCode: smtp.EnhancedCode{5, 5, 1},
@@ -294,6 +337,10 @@ func (s *Session) Data(r io.Reader) error {
 	raw, err := io.ReadAll(limited)
 	if err != nil {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("read_error").Inc()
+		s.backend.logger.Warn("smtp data rejected: read error",
+			zap.String("remote_ip", s.ip),
+			zap.Error(err),
+		)
 		return &smtp.SMTPError{
 			Code:         451,
 			EnhancedCode: smtp.EnhancedCode{4, 3, 0},
@@ -302,6 +349,11 @@ func (s *Session) Data(r io.Reader) error {
 	}
 	if int64(len(raw)) > s.backend.cfg.SMTPMaxMessageBytes {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("message_too_large").Inc()
+		s.backend.logger.Warn("smtp data rejected: message too large",
+			zap.String("remote_ip", s.ip),
+			zap.Int("message_bytes", len(raw)),
+			zap.Int64("max_message_bytes", s.backend.cfg.SMTPMaxMessageBytes),
+		)
 		return &smtp.SMTPError{
 			Code:         552,
 			EnhancedCode: smtp.EnhancedCode{5, 3, 4},
@@ -312,6 +364,12 @@ func (s *Session) Data(r io.Reader) error {
 	msgs, err := s.backend.transformer.Transform(s.envelopeFrom, s.recipients, raw)
 	if err != nil {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("mime_parse_error").Inc()
+		s.backend.logger.Warn("smtp data rejected: mime parse error",
+			zap.String("remote_ip", s.ip),
+			zap.String("sender_domain", senderDomain(s.envelopeFrom)),
+			zap.Int("recipient_count", len(s.recipients)),
+			zap.Error(err),
+		)
 		return &smtp.SMTPError{
 			Code:         554,
 			EnhancedCode: smtp.EnhancedCode{5, 6, 0},
@@ -321,9 +379,15 @@ func (s *Session) Data(r io.Reader) error {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if _, err := s.backend.store.EnqueueTx(ctx, s.envelopeFrom, msgs); err != nil {
+	jobIDs, err := s.backend.store.EnqueueTx(ctx, s.envelopeFrom, msgs)
+	if err != nil {
 		s.backend.metrics.SMTPRejectedMessages.WithLabelValues("queue_error").Inc()
-		s.backend.logger.Error("enqueue failed", zap.Error(err))
+		s.backend.logger.Error("smtp enqueue failed",
+			zap.String("remote_ip", s.ip),
+			zap.String("sender_domain", senderDomain(s.envelopeFrom)),
+			zap.Int("recipient_count", len(s.recipients)),
+			zap.Error(err),
+		)
 		return &smtp.SMTPError{
 			Code:         451,
 			EnhancedCode: smtp.EnhancedCode{4, 3, 0},
@@ -331,6 +395,13 @@ func (s *Session) Data(r io.Reader) error {
 		}
 	}
 	s.backend.metrics.SMTPAcceptedRecipients.Add(float64(len(msgs)))
+	s.backend.logger.Info("smtp message accepted and queued",
+		zap.String("remote_ip", s.ip),
+		zap.String("sender_domain", senderDomain(s.envelopeFrom)),
+		zap.Int("recipient_count", len(msgs)),
+		zap.Int("message_bytes", len(raw)),
+		zap.Int("queued_jobs", len(jobIDs)),
+	)
 	return nil
 }
 
@@ -365,4 +436,3 @@ func remoteIP(addr net.Addr) string {
 	}
 	return host
 }
-
