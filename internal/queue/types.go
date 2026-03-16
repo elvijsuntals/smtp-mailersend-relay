@@ -47,5 +47,6 @@ type QueueStore interface {
 	ListDLQ(ctx context.Context, limit int) ([]Job, error)
 	GetDLQByIDs(ctx context.Context, ids []string) ([]Job, error)
 	RequeueDLQIDs(ctx context.Context, ids []string, now time.Time) (int64, error)
+	RetryNow(ctx context.Context, now time.Time) (int64, error)
 	Close() error
 }

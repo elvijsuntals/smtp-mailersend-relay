@@ -456,6 +456,19 @@ WHERE status=? AND id IN (%s)`, placeholders(len(ids)))
 	return res.RowsAffected()
 }
 
+func (s *SQLiteStore) RetryNow(ctx context.Context, now time.Time) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `
+UPDATE jobs
+SET next_attempt_at=?, updated_at=?
+WHERE status=?`,
+		now.UTC(), now.UTC(), StatusRetry,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
+}
+
 func scanJobs(rows *sql.Rows) ([]Job, error) {
 	var out []Job
 	for rows.Next() {

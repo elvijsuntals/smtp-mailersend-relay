@@ -17,8 +17,17 @@ Send `SIGTERM` or `SIGINT`. The relay stops accepting SMTP, waits for background
 
 - `relay_queue_depth{status="queued|retry|processing|sent|dlq"}`
 - `relay_dispatch_api_calls_total`
+- `relay_dispatch_throttle_waits_total`
 - `relay_dispatch_retries_total`
 - `relay_dispatch_dlq_total`
+
+## Force retry queue now
+
+If you need all delayed retry items to become eligible immediately:
+
+```bash
+relay queue retry-now
+```
 
 ## DLQ operations
 

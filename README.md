@@ -33,6 +33,7 @@ Delivery semantics are at-least-once. Duplicate sends are possible on ambiguous 
 - `relay dlq export --format=jsonl --out=./dlq-export.jsonl`
 - `relay dlq replay --ids=id1,id2`
 - `relay dlq replay --from-file=./dlq-export.jsonl`
+- `relay queue retry-now`
 
 ## Quick Start (Local)
 
@@ -179,6 +180,14 @@ The effective bulk batch size is `min(BATCH_MAX_COUNT, MAILERSEND_BULK_API_MAX_M
 ```bash
 sqlite3 /data/relay.db "select status,count(*) from jobs group by status;"
 ```
+
+### Force retry queue immediately
+
+```bash
+relay queue retry-now
+```
+
+This sets `next_attempt_at` to now for all `retry` jobs so the dispatcher can pick them up immediately after restart or after a long backoff.
 
 ### Check MailerSend bulk status
 

@@ -44,8 +44,10 @@ func run(args []string) error {
 		return runMigrate(args[1:])
 	case "dlq":
 		return runDLQ(args[1:])
+	case "queue":
+		return runQueue(args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (expected: serve|migrate|dlq)", args[0])
+		return fmt.Errorf("unknown command %q (expected: serve|migrate|dlq|queue)", args[0])
 	}
 }
 
@@ -192,6 +194,18 @@ func runDLQ(args []string) error {
 	}
 }
 
+func runQueue(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: relay queue retry-now")
+	}
+	switch args[0] {
+	case "retry-now":
+		return runQueueRetryNow(args[1:])
+	default:
+		return fmt.Errorf("unknown queue subcommand %q (expected: retry-now)", args[0])
+	}
+}
+
 func runDLQExport(args []string) error {
 	fs := flag.NewFlagSet("dlq export", flag.ContinueOnError)
 	out := fs.String("out", "./dlq-export.jsonl", "output file path")
@@ -271,6 +285,30 @@ func runDLQReplay(args []string) error {
 		return err
 	}
 	fmt.Printf("requeued %d records\n", n)
+	return nil
+}
+
+func runQueueRetryNow(args []string) error {
+	fs := flag.NewFlagSet("queue retry-now", flag.ContinueOnError)
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		return err
+	}
+	store, err := queue.OpenSQLite(cfg.DBPath, cfg.DBMaxOpenConns, cfg.DBMaxIdleConns, "queue-retry-now")
+	if err != nil {
+		return err
+	}
+	defer store.Close()
+
+	n, err := store.RetryNow(context.Background(), time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	fmt.Printf("made %d retry records eligible now\n", n)
 	return nil
 }
 

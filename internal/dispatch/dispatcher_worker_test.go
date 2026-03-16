@@ -167,4 +167,8 @@ func (s *workerTestStore) RequeueDLQIDs(context.Context, []string, time.Time) (i
 	return 0, nil
 }
 
+func (s *workerTestStore) RetryNow(context.Context, time.Time) (int64, error) {
+	return 0, nil
+}
+
 func (s *workerTestStore) Close() error { return nil }
