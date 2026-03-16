@@ -23,4 +23,25 @@ See [README](../README.md) for full variable list and defaults.
 - `QUEUE_LEASE_TIMEOUT=30s`
 - `RETRY_MAX_ATTEMPTS=8`
 - `SQLITE_MAX_OPEN_CONNS=1`
+- `MAILERSEND_ACCOUNT_PLAN=starter`
 
+## MailerSend account limits
+
+The relay resolves MailerSend bulk capabilities from `.env`.
+
+- `MAILERSEND_ACCOUNT_PLAN` supports: `trial`, `free`, `hobby`, `starter`, `professional`, `enterprise`
+- Default plan is `starter`
+- `trial` and `free` are rejected by `relay serve` because this project is bulk-only
+- `MAILERSEND_ENABLE_CUSTOM_HEADERS=true` requires effective custom-header support
+
+Optional overrides:
+
+- `MAILERSEND_BULK_API_SUPPORTED`
+- `MAILERSEND_CUSTOM_HEADERS_SUPPORTED`
+- `MAILERSEND_BULK_API_MAX_MESSAGES_PER_REQUEST`
+- `MAILERSEND_BULK_API_MAX_REQUESTS_PER_MIN`
+
+Notes:
+
+- Effective batch size is `min(BATCH_MAX_COUNT, MAILERSEND_BULK_API_MAX_MESSAGES_PER_REQUEST)`
+- The relay locally shapes bulk requests per minute, but does not enforce MailerSend daily API quota or monthly email allowance

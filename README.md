@@ -139,9 +139,32 @@ from_email = "newsletter@yourdomain.com"
 - `BATCH_MAX_BYTES=5242880`
 - `BATCH_FLUSH_INTERVAL=250ms`
 - `RETRY_MAX_ATTEMPTS=8`
+- `MAILERSEND_ACCOUNT_PLAN=starter`
 - `MAILERSEND_ENABLE_CUSTOM_HEADERS=false`
 
 See `.env.example` for full list.
+
+## MailerSend Account Limits
+
+The relay resolves MailerSend account capabilities from `.env` and shapes outbound bulk traffic locally.
+
+- `MAILERSEND_ACCOUNT_PLAN` supports: `trial`, `free`, `hobby`, `starter`, `professional`, `enterprise`
+- Default plan is `starter`
+- The relay is bulk-only, so `trial` and `free` are rejected at startup
+- `MAILERSEND_ENABLE_CUSTOM_HEADERS=true` is only valid when the effective plan supports custom headers
+- Optional overrides:
+  - `MAILERSEND_BULK_API_SUPPORTED`
+  - `MAILERSEND_CUSTOM_HEADERS_SUPPORTED`
+  - `MAILERSEND_BULK_API_MAX_MESSAGES_PER_REQUEST`
+  - `MAILERSEND_BULK_API_MAX_REQUESTS_PER_MIN`
+
+Current local assumptions:
+
+- Bulk endpoint max messages per request: `500`
+- Local bulk request rate limit: `10` requests/minute
+- Daily API quota and monthly email allowance are not enforced locally
+
+The effective bulk batch size is `min(BATCH_MAX_COUNT, MAILERSEND_BULK_API_MAX_MESSAGES_PER_REQUEST)`.
 
 ## Operations
 
@@ -181,6 +204,11 @@ curl -s -H "Authorization: Bearer $MAILERSEND_API_KEY" \
 - Client refuses AUTH over plaintext.
 - Enable STARTTLS on relay and `tls_enabled=true` on client.
 
+### `configured MAILERSEND_ACCOUNT_PLAN="free" does not support bulk email`
+
+- Cause: this relay always uses MailerSend `/v1/bulk-email`.
+- Action: switch to `MAILERSEND_ACCOUNT_PLAN=hobby` or higher, or build a future non-bulk sender path.
+
 ### `certificate is not valid for any names`
 
 - Cert SAN does not include SMTP hostname.
@@ -195,7 +223,15 @@ curl -s -H "Authorization: Bearer $MAILERSEND_API_KEY" \
 
 - Query bulk status for `validation_errors_count` or suppressions.
 - If you see `MS42233` (custom headers feature), keep:
-  - `MAILERSEND_ENABLE_CUSTOM_HEADERS=false`
+  - `MAILERSEND_ENABLE_CUSTOM_HEADERS=false`, or use `professional` / `enterprise`
+
+### Queue depth grows but MailerSend `429` does not
+
+- Cause: the relay is waiting on its local MailerSend request limiter.
+- Action:
+  - Check `relay_dispatch_throttle_waits_total`
+  - Confirm `MAILERSEND_ACCOUNT_PLAN` and any `MAILERSEND_BULK_API_MAX_REQUESTS_PER_MIN` override
+  - Note that SMTP ingress continues accepting and queueing mail while dispatch is throttled
 
 ### HTML looks broken (`=3D`, image URL issues)
 

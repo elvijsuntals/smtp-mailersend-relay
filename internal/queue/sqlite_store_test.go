@@ -120,3 +120,61 @@ func TestSQLiteStore_RequeueStaleProcessing(t *testing.T) {
 	}
 }
 
+func TestSQLiteStore_ClaimDispatchBatchHonorsBatchLimits(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store, err := OpenSQLite(filepath.Join(dir, "relay.db"), 1, 1, "test-worker")
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	if err := store.Migrate(ctx); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	msgs := []*mailersend.Message{
+		{
+			From:       mailersend.From{Email: "sender@example.com"},
+			Recipients: []mailersend.Recipient{{Email: "a@example.net"}},
+			Subject:    "hello",
+			Text:       "body",
+		},
+		{
+			From:       mailersend.From{Email: "sender@example.com"},
+			Recipients: []mailersend.Recipient{{Email: "b@example.net"}},
+			Subject:    "hello2",
+			Text:       "body2",
+		},
+	}
+	if _, err := store.EnqueueTx(ctx, "sender@example.com", msgs); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	jobs, err := store.ClaimDispatchBatch(ctx, time.Now().UTC(), 100, 30*time.Second, 1, 5*1024*1024)
+	if err != nil {
+		t.Fatalf("claim dispatch batch: %v", err)
+	}
+	if len(jobs) != 1 {
+		t.Fatalf("expected 1 claimed job, got %d", len(jobs))
+	}
+	if jobs[0].RecipientEmail != "a@example.net" {
+		t.Fatalf("first claimed recipient = %q, want a@example.net", jobs[0].RecipientEmail)
+	}
+
+	if err := store.MarkSent(ctx, jobs, "bulk-1"); err != nil {
+		t.Fatalf("mark sent: %v", err)
+	}
+
+	remaining, err := store.ClaimDispatchBatch(ctx, time.Now().UTC(), 100, 30*time.Second, 1, 5*1024*1024)
+	if err != nil {
+		t.Fatalf("claim remaining batch: %v", err)
+	}
+	if len(remaining) != 1 {
+		t.Fatalf("expected 1 remaining claimed job, got %d", len(remaining))
+	}
+	if remaining[0].RecipientEmail != "b@example.net" {
+		t.Fatalf("second claimed recipient = %q, want b@example.net", remaining[0].RecipientEmail)
+	}
+}

@@ -8,6 +8,23 @@ import (
 	"time"
 )
 
+const (
+	MailerSendPlanTrial        = "trial"
+	MailerSendPlanFree         = "free"
+	MailerSendPlanHobby        = "hobby"
+	MailerSendPlanStarter      = "starter"
+	MailerSendPlanProfessional = "professional"
+	MailerSendPlanEnterprise   = "enterprise"
+)
+
+type MailerSendAccountLimits struct {
+	Plan                         string
+	BulkAPISupported             bool
+	CustomHeadersSupported       bool
+	BulkAPIMaxMessagesPerRequest int
+	BulkAPIMaxRequestsPerMin     int
+}
+
 type Config struct {
 	Env      string
 	LogLevel string
@@ -42,13 +59,23 @@ type Config struct {
 	RetryMaxAttempts     int
 	RequeueStaleInterval time.Duration
 
-	MailersendAPIKey  string
-	MailersendBaseURL string
-	MailersendTimeout time.Duration
-	MailersendEnableCustomHeaders bool
+	MailersendAPIKey                       string
+	MailersendBaseURL                      string
+	MailersendTimeout                      time.Duration
+	MailersendEnableCustomHeaders          bool
+	MailersendAccountPlan                  string
+	MailersendBulkAPISupported             bool
+	MailersendCustomHeadersSupported       bool
+	MailersendBulkAPIMaxMessagesPerRequest int
+	MailersendBulkAPIMaxRequestsPerMin     int
 }
 
 func LoadFromEnv() (Config, error) {
+	limits, err := loadMailerSendAccountLimitsFromEnv()
+	if err != nil {
+		return Config{}, err
+	}
+
 	cfg := Config{
 		Env:      getenv("APP_ENV", "production"),
 		LogLevel: getenv("LOG_LEVEL", "info"),
@@ -83,10 +110,15 @@ func LoadFromEnv() (Config, error) {
 		RetryMaxAttempts:     getenvInt("RETRY_MAX_ATTEMPTS", 8),
 		RequeueStaleInterval: getenvDuration("REQUEUE_STALE_INTERVAL", 30*time.Second),
 
-		MailersendAPIKey:  getenv("MAILERSEND_API_KEY", ""),
-		MailersendBaseURL: getenv("MAILERSEND_BASE_URL", "https://api.mailersend.com/v1"),
-		MailersendTimeout: getenvDuration("MAILERSEND_TIMEOUT", 20*time.Second),
-		MailersendEnableCustomHeaders: getenvBool("MAILERSEND_ENABLE_CUSTOM_HEADERS", false),
+		MailersendAPIKey:                       getenv("MAILERSEND_API_KEY", ""),
+		MailersendBaseURL:                      getenv("MAILERSEND_BASE_URL", "https://api.mailersend.com/v1"),
+		MailersendTimeout:                      getenvDuration("MAILERSEND_TIMEOUT", 20*time.Second),
+		MailersendEnableCustomHeaders:          getenvBool("MAILERSEND_ENABLE_CUSTOM_HEADERS", false),
+		MailersendAccountPlan:                  limits.Plan,
+		MailersendBulkAPISupported:             limits.BulkAPISupported,
+		MailersendCustomHeadersSupported:       limits.CustomHeadersSupported,
+		MailersendBulkAPIMaxMessagesPerRequest: limits.BulkAPIMaxMessagesPerRequest,
+		MailersendBulkAPIMaxRequestsPerMin:     limits.BulkAPIMaxRequestsPerMin,
 	}
 
 	if err := cfg.ValidateCommon(); err != nil {
@@ -138,6 +170,12 @@ func (c Config) ValidateCommon() error {
 	if c.MailersendTimeout <= 0 {
 		return fmt.Errorf("MAILERSEND_TIMEOUT must be > 0")
 	}
+	if c.MailersendBulkAPIMaxMessagesPerRequest < 1 || c.MailersendBulkAPIMaxMessagesPerRequest > 500 {
+		return fmt.Errorf("MAILERSEND_BULK_API_MAX_MESSAGES_PER_REQUEST must be in range [1,500]")
+	}
+	if c.MailersendBulkAPIMaxRequestsPerMin < 1 {
+		return fmt.Errorf("MAILERSEND_BULK_API_MAX_REQUESTS_PER_MIN must be >= 1")
+	}
 	return nil
 }
 
@@ -156,7 +194,96 @@ func (c Config) ValidateServe() error {
 	if c.MailersendAPIKey == "" {
 		return fmt.Errorf("MAILERSEND_API_KEY is required")
 	}
+	if !c.MailersendBulkAPISupported {
+		return fmt.Errorf(
+			"configured MAILERSEND_ACCOUNT_PLAN=%q does not support bulk email; this relay is bulk-only and free/trial plans need a future non-bulk sender",
+			c.MailersendAccountPlan,
+		)
+	}
+	if c.MailersendEnableCustomHeaders && !c.MailersendCustomHeadersSupported {
+		return fmt.Errorf(
+			"MAILERSEND_ENABLE_CUSTOM_HEADERS=true requires a MailerSend plan with custom headers support; effective plan is %q",
+			c.MailersendAccountPlan,
+		)
+	}
 	return nil
+}
+
+func (c Config) EffectiveBatchMaxCount() int {
+	if c.BatchMaxCount < c.MailersendBulkAPIMaxMessagesPerRequest {
+		return c.BatchMaxCount
+	}
+	return c.MailersendBulkAPIMaxMessagesPerRequest
+}
+
+func loadMailerSendAccountLimitsFromEnv() (MailerSendAccountLimits, error) {
+	plan := strings.ToLower(strings.TrimSpace(getenv("MAILERSEND_ACCOUNT_PLAN", MailerSendPlanStarter)))
+	limits, err := resolveMailerSendAccountLimits(plan)
+	if err != nil {
+		return MailerSendAccountLimits{}, err
+	}
+
+	if override, ok, err := getenvOptionalBool("MAILERSEND_BULK_API_SUPPORTED"); err != nil {
+		return MailerSendAccountLimits{}, err
+	} else if ok {
+		limits.BulkAPISupported = override
+	}
+	if override, ok, err := getenvOptionalBool("MAILERSEND_CUSTOM_HEADERS_SUPPORTED"); err != nil {
+		return MailerSendAccountLimits{}, err
+	} else if ok {
+		limits.CustomHeadersSupported = override
+	}
+	if override, ok, err := getenvOptionalInt("MAILERSEND_BULK_API_MAX_MESSAGES_PER_REQUEST"); err != nil {
+		return MailerSendAccountLimits{}, err
+	} else if ok {
+		limits.BulkAPIMaxMessagesPerRequest = override
+	}
+	if override, ok, err := getenvOptionalInt("MAILERSEND_BULK_API_MAX_REQUESTS_PER_MIN"); err != nil {
+		return MailerSendAccountLimits{}, err
+	} else if ok {
+		limits.BulkAPIMaxRequestsPerMin = override
+	}
+
+	return limits, nil
+}
+
+func resolveMailerSendAccountLimits(plan string) (MailerSendAccountLimits, error) {
+	switch plan {
+	case MailerSendPlanTrial, MailerSendPlanFree:
+		return MailerSendAccountLimits{
+			Plan:                         plan,
+			BulkAPISupported:             false,
+			CustomHeadersSupported:       false,
+			BulkAPIMaxMessagesPerRequest: 500,
+			BulkAPIMaxRequestsPerMin:     10,
+		}, nil
+	case MailerSendPlanHobby, MailerSendPlanStarter:
+		return MailerSendAccountLimits{
+			Plan:                         plan,
+			BulkAPISupported:             true,
+			CustomHeadersSupported:       false,
+			BulkAPIMaxMessagesPerRequest: 500,
+			BulkAPIMaxRequestsPerMin:     10,
+		}, nil
+	case MailerSendPlanProfessional, MailerSendPlanEnterprise:
+		return MailerSendAccountLimits{
+			Plan:                         plan,
+			BulkAPISupported:             true,
+			CustomHeadersSupported:       true,
+			BulkAPIMaxMessagesPerRequest: 500,
+			BulkAPIMaxRequestsPerMin:     10,
+		}, nil
+	default:
+		return MailerSendAccountLimits{}, fmt.Errorf(
+			"MAILERSEND_ACCOUNT_PLAN must be one of %q, %q, %q, %q, %q, %q",
+			MailerSendPlanTrial,
+			MailerSendPlanFree,
+			MailerSendPlanHobby,
+			MailerSendPlanStarter,
+			MailerSendPlanProfessional,
+			MailerSendPlanEnterprise,
+		)
+	}
 }
 
 func getenv(key, def string) string {
@@ -213,6 +340,30 @@ func getenvDuration(key string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func getenvOptionalBool(key string) (bool, bool, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return false, false, nil
+	}
+	b, err := strconv.ParseBool(v)
+	if err != nil {
+		return false, false, fmt.Errorf("%s must be a boolean value", key)
+	}
+	return b, true, nil
+}
+
+func getenvOptionalInt(key string) (int, bool, error) {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return 0, false, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, false, fmt.Errorf("%s must be an integer value", key)
+	}
+	return n, true, nil
 }
 
 func splitCSV(v string) []string {

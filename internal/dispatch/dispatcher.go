@@ -34,18 +34,23 @@ type Dispatcher struct {
 	metrics *metrics.Metrics
 	store   queue.QueueStore
 	sender  BulkSender
+	limiter RequestLimiter
 
 	wg            sync.WaitGroup
 	lastHeartbeat atomic.Int64
 }
 
-func New(cfg Config, logger *zap.Logger, m *metrics.Metrics, store queue.QueueStore, sender BulkSender) *Dispatcher {
+func New(cfg Config, logger *zap.Logger, m *metrics.Metrics, store queue.QueueStore, sender BulkSender, limiter RequestLimiter) *Dispatcher {
+	if limiter == nil {
+		limiter = noopLimiter{}
+	}
 	return &Dispatcher{
 		cfg:     cfg,
 		logger:  logger,
 		metrics: m,
 		store:   store,
 		sender:  sender,
+		limiter: limiter,
 	}
 }
 
@@ -100,8 +105,32 @@ func (d *Dispatcher) workerLoop(ctx context.Context, workerIdx int) {
 
 		d.lastHeartbeat.Store(time.Now().UTC().Unix())
 
+		waitStarted := time.Now()
+		if err := d.limiter.Wait(ctx); err != nil {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				d.logger.Error("dispatch limiter wait failed", zap.Int("worker", workerIdx), zap.Error(err))
+				time.Sleep(500 * time.Millisecond)
+				continue
+			}
+		}
+		waited := time.Since(waitStarted)
+		if waited > 0 {
+			d.metrics.DispatchThrottleWaits.Inc()
+			d.metrics.DispatchThrottleWaitSeconds.Observe(waited.Seconds())
+		}
+
 		now := time.Now().UTC()
-		jobs, err := d.store.ClaimBatch(ctx, now, d.cfg.QueueClaimLimit, d.cfg.QueueLeaseTimeout)
+		jobs, err := d.store.ClaimDispatchBatch(
+			ctx,
+			now,
+			d.cfg.QueueClaimLimit,
+			d.cfg.QueueLeaseTimeout,
+			d.cfg.BatchMaxCount,
+			d.cfg.BatchMaxBytes,
+		)
 		if err != nil {
 			d.logger.Error("claim batch failed", zap.Int("worker", workerIdx), zap.Error(err))
 			select {
@@ -120,10 +149,8 @@ func (d *Dispatcher) workerLoop(ctx context.Context, workerIdx int) {
 			}
 		}
 
-		for _, batch := range splitBatches(jobs, d.cfg.BatchMaxCount, d.cfg.BatchMaxBytes) {
-			if err := d.processBatch(ctx, batch); err != nil {
-				d.logger.Error("process batch failed", zap.Int("worker", workerIdx), zap.Error(err))
-			}
+		if err := d.processBatch(ctx, jobs); err != nil {
+			d.logger.Error("process batch failed", zap.Int("worker", workerIdx), zap.Error(err))
 		}
 	}
 }

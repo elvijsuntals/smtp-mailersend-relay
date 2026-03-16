@@ -15,13 +15,15 @@ type Metrics struct {
 
 	QueueDepth *prometheus.GaugeVec
 
-	DispatchBatchSize       prometheus.Histogram
-	DispatchLatencySeconds  prometheus.Histogram
-	DispatchAPICalls        *prometheus.CounterVec
-	DispatchRetries         prometheus.Counter
-	DispatchDLQ             prometheus.Counter
-	RequeueStaleRecoveries  prometheus.Counter
-	DispatchLastSuccessUnix atomic.Int64
+	DispatchBatchSize           prometheus.Histogram
+	DispatchLatencySeconds      prometheus.Histogram
+	DispatchAPICalls            *prometheus.CounterVec
+	DispatchRetries             prometheus.Counter
+	DispatchDLQ                 prometheus.Counter
+	DispatchThrottleWaits       prometheus.Counter
+	DispatchThrottleWaitSeconds prometheus.Histogram
+	RequeueStaleRecoveries      prometheus.Counter
+	DispatchLastSuccessUnix     atomic.Int64
 }
 
 func New() *Metrics {
@@ -66,6 +68,15 @@ func New() *Metrics {
 			Name: "relay_dispatch_dlq_total",
 			Help: "Total DLQ transitions.",
 		}),
+		DispatchThrottleWaits: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "relay_dispatch_throttle_waits_total",
+			Help: "Total outbound dispatch waits caused by the local MailerSend rate limiter.",
+		}),
+		DispatchThrottleWaitSeconds: prometheus.NewHistogram(prometheus.HistogramOpts{
+			Name:    "relay_dispatch_throttle_wait_seconds",
+			Help:    "Time spent waiting on the local MailerSend rate limiter before claiming a batch.",
+			Buckets: prometheus.DefBuckets,
+		}),
 		RequeueStaleRecoveries: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "relay_requeue_stale_recoveries_total",
 			Help: "Total stale processing recoveries on startup/runtime.",
@@ -82,6 +93,8 @@ func New() *Metrics {
 		m.DispatchAPICalls,
 		m.DispatchRetries,
 		m.DispatchDLQ,
+		m.DispatchThrottleWaits,
+		m.DispatchThrottleWaitSeconds,
 		m.RequeueStaleRecoveries,
 	)
 	return m
@@ -90,4 +103,3 @@ func New() *Metrics {
 func (m *Metrics) Registry() *prometheus.Registry {
 	return m.reg
 }
-

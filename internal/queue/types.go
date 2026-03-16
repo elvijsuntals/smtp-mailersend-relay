@@ -37,6 +37,7 @@ type QueueStore interface {
 	Migrate(ctx context.Context) error
 	EnqueueTx(ctx context.Context, envelopeFrom string, messages []*mailersend.Message) ([]string, error)
 	ClaimBatch(ctx context.Context, now time.Time, limit int, leaseTimeout time.Duration) ([]Job, error)
+	ClaimDispatchBatch(ctx context.Context, now time.Time, limit int, leaseTimeout time.Duration, maxCount int, maxBytes int) ([]Job, error)
 	MarkSent(ctx context.Context, jobs []Job, bulkEmailID string) error
 	MarkRetry(ctx context.Context, jobs []Job, nextAttemptAt time.Time, errMsg string, httpStatus int) error
 	MarkDLQ(ctx context.Context, jobs []Job, errMsg string, httpStatus int) error
@@ -48,4 +49,3 @@ type QueueStore interface {
 	RequeueDLQIDs(ctx context.Context, ids []string, now time.Time) (int64, error)
 	Close() error
 }
-

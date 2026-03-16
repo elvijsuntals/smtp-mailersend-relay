@@ -83,25 +83,31 @@ func runServe(args []string) error {
 
 	m := metrics.New()
 	transformer := mimeparse.NewTransformer(cfg.MailersendEnableCustomHeaders)
-	if cfg.MailersendEnableCustomHeaders {
-		logger.Warn("mailersend custom headers enabled; requires supported MailerSend plan")
-	}
+	logger.Info("mailersend account limits resolved",
+		zap.String("plan", cfg.MailersendAccountPlan),
+		zap.Bool("bulk_api_supported", cfg.MailersendBulkAPISupported),
+		zap.Bool("custom_headers_supported", cfg.MailersendCustomHeadersSupported),
+		zap.Int("bulk_api_max_messages_per_request", cfg.MailersendBulkAPIMaxMessagesPerRequest),
+		zap.Int("bulk_api_max_requests_per_min", cfg.MailersendBulkAPIMaxRequestsPerMin),
+		zap.Int("effective_batch_max_count", cfg.EffectiveBatchMaxCount()),
+	)
 
 	sender, err := dispatch.NewMailerSendSender(cfg.MailersendAPIKey, cfg.MailersendBaseURL, cfg.MailersendTimeout)
 	if err != nil {
 		return err
 	}
+	limiter := dispatch.NewRequestLimiter(cfg.MailersendBulkAPIMaxRequestsPerMin)
 	disp := dispatch.New(dispatch.Config{
 		Workers:             cfg.DispatcherWorkers,
 		QueueClaimLimit:     cfg.QueueClaimLimit,
 		QueueLeaseTimeout:   cfg.QueueLeaseTimeout,
-		BatchMaxCount:       cfg.BatchMaxCount,
+		BatchMaxCount:       cfg.EffectiveBatchMaxCount(),
 		BatchMaxBytes:       cfg.BatchMaxBytes,
 		BatchFlushInterval:  cfg.BatchFlushInterval,
 		RetryMaxAttempts:    cfg.RetryMaxAttempts,
 		RequeueStaleEvery:   cfg.RequeueStaleInterval,
 		QueueDepthPollEvery: 2 * time.Second,
-	}, logger, m, store, sender)
+	}, logger, m, store, sender, limiter)
 
 	// Recover stale processing leases at startup.
 	if n, err := store.RequeueStaleProcessing(ctx, time.Now().UTC(), cfg.QueueLeaseTimeout); err != nil {

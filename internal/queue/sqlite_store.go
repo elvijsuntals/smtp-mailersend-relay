@@ -127,6 +127,24 @@ func (s *SQLiteStore) EnqueueTx(ctx context.Context, envelopeFrom string, messag
 }
 
 func (s *SQLiteStore) ClaimBatch(ctx context.Context, now time.Time, limit int, _ time.Duration) ([]Job, error) {
+	return s.claimJobs(ctx, now, limit, func(_ int, _ int, _ int) bool {
+		return false
+	})
+}
+
+func (s *SQLiteStore) ClaimDispatchBatch(ctx context.Context, now time.Time, limit int, _ time.Duration, maxCount int, maxBytes int) ([]Job, error) {
+	if maxCount <= 0 {
+		maxCount = 500
+	}
+	if maxBytes <= 0 {
+		maxBytes = 5 * 1024 * 1024
+	}
+	return s.claimJobs(ctx, now, limit, func(batchCount int, batchBytes int, nextJobBytes int) bool {
+		return batchCount > 0 && (batchCount >= maxCount || batchBytes+nextJobBytes > maxBytes)
+	})
+}
+
+func (s *SQLiteStore) claimJobs(ctx context.Context, now time.Time, limit int, shouldStop func(batchCount int, batchBytes int, nextJobBytes int) bool) ([]Job, error) {
 	if limit <= 0 {
 		return nil, nil
 	}
@@ -138,7 +156,7 @@ func (s *SQLiteStore) ClaimBatch(ctx context.Context, now time.Time, limit int, 
 
 	ids := make([]string, 0, limit)
 	rows, err := tx.QueryContext(ctx, `
-SELECT id
+SELECT id, payload_json
 FROM jobs
 WHERE status IN (?, ?)
   AND next_attempt_at <= ?
@@ -149,13 +167,20 @@ LIMIT ?`,
 	if err != nil {
 		return nil, err
 	}
+	batchBytes := 0
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		var payloadJSON string
+		if err := rows.Scan(&id, &payloadJSON); err != nil {
 			rows.Close()
 			return nil, err
 		}
+		nextJobBytes := len(payloadJSON) + 128
+		if shouldStop(len(ids), batchBytes, nextJobBytes) {
+			break
+		}
 		ids = append(ids, id)
+		batchBytes += nextJobBytes
 	}
 	rows.Close()
 	if len(ids) == 0 {

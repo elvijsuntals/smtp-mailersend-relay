@@ -46,7 +46,7 @@ func TestDispatcher_PermanentFailureToDLQ(t *testing.T) {
 	}, zap.NewNop(), metrics.New(), store, &fakeSender{
 		result: SendResult{HTTPStatus: 422},
 		err:    &SenderError{StatusCode: 422, Err: errors.New("validation")},
-	})
+	}, nil)
 
 	if err := d.processBatch(context.Background(), jobs); err != nil {
 		t.Fatalf("process batch: %v", err)
@@ -94,7 +94,7 @@ func TestDispatcher_RetryThenSuccess(t *testing.T) {
 		RetryMaxAttempts:    8,
 		RequeueStaleEvery:   1 * time.Minute,
 		QueueDepthPollEvery: 1 * time.Minute,
-	}, zap.NewNop(), metrics.New(), store, sender)
+	}, zap.NewNop(), metrics.New(), store, sender, nil)
 
 	if err := d.processBatch(context.Background(), jobs); err != nil {
 		t.Fatalf("process retry batch: %v", err)
@@ -145,4 +145,3 @@ type fakeSender struct {
 func (f *fakeSender) Send(_ context.Context, _ []*mailersend.Message) (SendResult, error) {
 	return f.result, f.err
 }
-
