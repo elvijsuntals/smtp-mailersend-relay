@@ -22,11 +22,12 @@ services:
     volumes:
       - relay-data:/data
       - ./certs:/certs:ro
-    ports:
-      # Published host ports must be unique per deployment.
-      # Keep container ports stable and override only the published ports in Dokploy.
-      - "${SMTP_PUBLISHED_PORT:-2525}:2525"
-      - "${HTTP_PUBLISHED_PORT:-8080}:8080"
+    # Dokploy runs stacks on Docker Swarm; publishing ports here creates global ingress
+    # reservations and prevents multi-deploy on the same host.
+    # Use `expose` and configure published ports per-app in Dokploy instead.
+    expose:
+      - "2525"
+      - "8080"
 
   # Optional local listmonk example.
   listmonk:

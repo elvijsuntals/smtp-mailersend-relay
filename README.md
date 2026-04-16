@@ -100,15 +100,12 @@ If cert is self-signed, clients must use `tls_skip_verify=true`.
 
 ### 3) Ports and DNS
 
-- Expose TCP port `2525` publicly (or another port if you publish a different one)
+- Publish TCP port `2525` publicly (or another port if you choose a different published port in Dokploy)
 - Open that `tcp` port on VPS firewall/security group
 - DNS record for SMTP host must be DNS-only (no HTTP proxy in front of SMTP)
 
-If you run multiple deployments on the same host, each deployment must publish unique host ports.
-With `docker-compose.yml`, override only the published ports:
-
-- `SMTP_PUBLISHED_PORT` (host port -> container `2525`)
-- `HTTP_PUBLISHED_PORT` (host port -> container `8080`)
+Dokploy (Docker Swarm) reserves published ingress ports globally per server.
+To run multiple deployments on the same host, publish unique ports per app in Dokploy (and keep the compose file using `expose` only).
 
 ### 4) listmonk SMTP settings
 
@@ -141,8 +138,6 @@ from_email = "newsletter@yourdomain.com"
 
 - `SMTP_LISTEN_ADDR=:2525` (internal listen addr inside container)
 - `HTTP_LISTEN_ADDR=:8080` (internal listen addr inside container)
-- `SMTP_PUBLISHED_PORT=2525` (published host port, compose/Dokploy)
-- `HTTP_PUBLISHED_PORT=8080` (published host port, compose/Dokploy)
 - `SQLITE_PATH=./data/relay.db`
 - `BATCH_MAX_COUNT=500`
 - `BATCH_MAX_BYTES=5242880`
