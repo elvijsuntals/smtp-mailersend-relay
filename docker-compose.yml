@@ -3,11 +3,10 @@ version: "3.9"
 services:
   relay:
     build: .
-    container_name: smtp-mailersend-relay
     environment:
       APP_ENV: production
       LOG_LEVEL: info
-      SMTP_LISTEN_ADDR: ":2525"
+      SMTP_LISTEN_ADDR: "${SMTP_LISTEN_ADDR:-:2525}"
       SMTP_DOMAIN: relay.local
       SMTP_AUTH_USERNAME: relay-user
       SMTP_AUTH_PASSWORD: relay-pass
@@ -16,7 +15,7 @@ services:
       SMTP_TLS_CERT_FILE: /certs/server.crt
       SMTP_TLS_KEY_FILE: /certs/server.key
       SMTP_ALLOWED_SENDER_DOMAINS: example.com
-      HTTP_LISTEN_ADDR: ":8080"
+      HTTP_LISTEN_ADDR: "${HTTP_LISTEN_ADDR:-:8080}"
       SQLITE_PATH: /data/relay.db
       MAILERSEND_API_KEY: ${MAILERSEND_API_KEY}
       MAILERSEND_BASE_URL: https://api.mailersend.com/v1
@@ -24,8 +23,10 @@ services:
       - relay-data:/data
       - ./certs:/certs:ro
     ports:
-      - "2525:2525"
-      - "8080:8080"
+      # Published host ports must be unique per deployment.
+      # Keep container ports stable and override only the published ports in Dokploy.
+      - "${SMTP_PUBLISHED_PORT:-2525}:2525"
+      - "${HTTP_PUBLISHED_PORT:-8080}:8080"
 
   # Optional local listmonk example.
   listmonk:
